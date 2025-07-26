@@ -16,6 +16,10 @@
 
 <img src="readMe_image.png" style="width:100%;height:auto;" />
 
+### Thunderbird's addon page :
+
+https://addons.thunderbird.net/fr/developers/addon/mrof-move-rep-original-folder/edit
+
 ## Fonctionnement
 
 1. **Détection** : `background.js` intercepte `messageDisplay.onMessageDisplayed`, lit uniquement les en‑têtes avec `messages.getRaw`, extrait tous les `<Message-ID>` et calcule `count`.
