@@ -1,90 +1,104 @@
 # Thunderbird MROF (Move Reply to Original Folder)
 
-> **Fonction :** un bouton ajouté dans la barre d’outils de lecture d’un message affiche :
->
-> ```
-> Fil (N) : /chemin/du/dossier
-> ```
->
-> – **N** est le nombre de messages détectés dans la conversation  
-> – Le dossier est celui du premier message **hors** Courrier entrant / Spam / Brouillons / Envoyés
->
-> Un clic déplace immédiatement le message affiché dans ce dossier.  
-> Le bouton est grisé si aucun dossier valide n’est trouvé.
+## Why should you use MROF ?
 
----
+**Alice:** “Ugh, I feel like Indiana Jones searching through my own folders for sorting replies! 😩🗃️”  
+**Bob:** “Fear not—Thunderbird MROF is here! 🚀 It magically spots the right thread and teleports your email into the correct folder. No more treasure hunts! 🧙‍♂️✨”  
+**Alice:** “Teleportation? Sounds like wizardry! 🔮 How do I activate it?”  
+**Bob:** “Just click the button—bam! Your message is whisked away to its proper home. No more folder fiascos! 🎉📥”
 
 <img src="readMe_image.png" style="width:100%;height:auto;" />
 
-### Thunderbird's addon page :
+## How does it works ?
 
-https://addons.thunderbird.net/fr/developers/addon/mrof-move-rep-original-folder/edit
-
-## Fonctionnement
-
-1. **Détection** : `background.js` intercepte `messageDisplay.onMessageDisplayed`, lit uniquement les en‑têtes avec `messages.getRaw`, extrait tous les `<Message-ID>` et calcule `count`.
-2. **Recherche** : pour chaque ID, une requête `messages.query({headerMessageId})` est lancée ; on retient le premier résultat dont le dossier ne correspond pas à Inbox/Spam/Drafts/Sent.
-3. **Mise à jour** : le bouton reçoit le titre `Fil (N) : dossier`. S’il n’y a pas de dossier valide, il est désactivé (`message_display_action.disable`).
-4. **Popup (legacy)** : si `default_popup` est présent (cf. `manifest.json`), `popup.js` fournit une confirmation manuelle avant déplacement.
-5. **Déplacement** : au clic, `background.js` (ou `popup.js` si confirmé) exécute `messages.move()`, puis affiche une notification native de succès.
-
-### Fonctionnalités
-
-| Fonction                        | Détails                                                                                                                                                                                                                                                                    |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bouton `message_display_action` | Affiché dans la barre d’outils de la vue message ([MDN messageDisplayAction](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html)).                                                                                                               |
-| Détection rapide du fil         | Lecture minimale des en‑têtes avec [`browser.messages.getRaw`](https://webextension-api.thunderbird.net/en/stable/messages.html#getraw-messageid-options); extraction de `Message-ID`, `References`.                                                                       |
-| Recherche éclair du dossier     | Interrogation parallèle de [`browser.messages.query`](https://webextension-api.thunderbird.net/en/stable/messages.html#query-queryinfo); court‑circuit dès qu’un dossier valide est trouvé.                                                                                |
-| Cache mémoire                   | Map « threadId → dossier » pour éviter les requêtes répétées.                                                                                                                                                                                                              |
-| Grisage dynamique du bouton     | Activation/désactivation via [`browser.messageDisplayAction.enable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#enable-tabid) / [`disable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#disable-tabid). |
-| Déplacement instantané          | Déplacement avec [`browser.messages.move`](https://webextension-api.thunderbird.net/en/stable/messages.html#move-messageids-folderid) et notification native de succès.                                                                                                    |
-| Compatibilité                   | Testé sous Thunderbird 128 ESR (Manifest V2).                                                                                                                                                                                                                              |
+> **Function:** A button added to the message-view toolbar displays:
+>
+> ```
+> Thread (N): /path/to/folder
+> ```
+>
+> – **N** is the number of messages detected in the conversation
+> – The folder is that of the first message **outside** Inbox/Spam/Drafts/Sent
+>
+> A single click immediately moves the displayed message into that folder.
+> The button is disabled (greyed out) if no valid folder is found.
 
 ---
 
-## Installation (mode développeur)
+## How It Works
 
-1. Ouvre Thunderbird ≥ 115 ESR.
-2. **Outils → Modules complémentaires → ⚙ → Déboguer les modules**.
-3. **Charger un module temporaire** et sélectionne `manifest.json`.
-4. Ouvre un message pour voir le bouton.
+1. **Detection:** `background.js` intercepts `messageDisplay.onMessageDisplayed`, fetches only the headers with `messages.getRaw`, extracts all `<Message-ID>`s, and counts them as `threadCount`.
+2. **Lookup:** For each ID, a `messages.query({ headerMessageId })` request is issued in parallel; the first result whose folder path is not Inbox/Spam/Drafts/Sent is selected.
+3. **Update:** The button title becomes `Thread (N): folder`. If no valid folder is found, the button is disabled via `messageDisplayAction.disable`.
+4. **Popup (legacy):** If `default_popup` is defined in `manifest.json`, `popup.js` provides a manual confirmation before moving.
+5. **Move:** On click, `background.js` (or `popup.js` if confirmation is used) calls `messages.move()` and shows a native success notification.
+
+### Features
+
+| Feature                         | Details                                                                                                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message_display_action` button | Appears in the message-view toolbar ([MDN messageDisplayAction](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html)).                                                                                                                     |
+| Quick thread detection          | Minimal header reads via [`browser.messages.getRaw`](https://webextension-api.thunderbird.net/en/stable/messages.html#getraw-messageid-options); extracts `Message-ID` and `References`.                                                                            |
+| Fast folder lookup              | Parallel queries using [`browser.messages.query`](https://webextension-api.thunderbird.net/en/stable/messages.html#query-queryinfo); short‑circuits as soon as a valid folder is found.                                                                             |
+| In-memory cache                 | A session‑long map `threadKey → folderPath` avoids repeated lookups for the same thread.                                                                                                                                                                            |
+| Dynamic enable/disable          | Button activation via [`browser.messageDisplayAction.enable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#enable-tabid) / [`disable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#disable-tabid). |
+| Instant move                    | Moves via [`browser.messages.move`](https://webextension-api.thunderbird.net/en/stable/messages.html#move-messageids-folderid) and then displays a native success notification.                                                                                     |
+| Compatibility                   | Tested on 140.1.0esr (64 bits)                                                                                                                                                                                                                                      |
 
 ---
 
-## Utilisation
+## Installation (Developer Mode)
 
-| État du bouton | Signification                                                  |
-| -------------- | -------------------------------------------------------------- |
-| 🟢 **Actif**   | Un dossier valide a été trouvé ; cliquer déplace le message.   |
-| ⚪ **Gris**    | Aucun dossier valide (ou erreur) ; le message reste où il est. |
+1. Open Thunderbird ≥ 115 ESR.
+2. **Tools → Add-ons → ⚙ → Debug Add-ons**.
+3. **Load Temporary Add-on** and select `manifest.json`.
+4. Open any message to see the new button in the toolbar.
 
 ---
 
-## Fichiers du projet
+## Usage
 
-| Fichier            | Rôle                                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `manifest.json`    | Déclaration MV2, définition de l’action `message_display_action`, permissions minimales fileciteturn2file1 |
-| `background.js`    | Calcul du titre, gestion du cache, activation/désactivation, déplacement sans popup                           |
-| `popup/popup.html` | Popup de confirmation affichant infos + boutons Oui/Non fileciteturn2file0                                 |
-| `popup/popup.js`   | Logique côté popup : extraction des IDs, appel messages & déplacement                                         |
-| `icons/`           | Icônes (256 px affichée et redimensionnée)                                                                    |
+| Button State    | Meaning                                                                        |
+| --------------- | ------------------------------------------------------------------------------ |
+| 🟢 **Active**   | A valid target folder was found; clicking moves the message.                   |
+| ⚪ **Disabled** | No valid folder found (or an error occurred); the message remains where it is. |
 
-### Structure
+---
 
-```
+## Project Files
+
+| File            | Role                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| `manifest.json` | Declares MV2, defines the `message_display_action`, and lists minimal required permissions. |
+| `background.js` | Calculates thread info, manages cache, updates and toggles the button, performs the move.   |
+| `icons/`        | Contains a 256 × 256 icon (`clippy-256.ico`) used in toolbar and notifications.             |
+
+### Directory Structure
+
+```plaintext
 move-reply/
 ├── manifest.json
 ├── background.js
 ├── icons/
 │   └── clippy-256.ico
-└── popup/
-    ├── popup.html
-    └── popup.js
 ```
 
 ---
 
-## Développer & déboguer
+## Development & Debugging
 
-Utilisez **Examiner** dans la page _Déboguer les modules_ pour afficher la console background et celle du popup.
+Use **Inspect** in the _Debug Add-ons_ page to open the background and popup consoles for real-time logs and inspection.
+
+---
+
+## Recent Enhancements (Integrated by \[Your Name])
+
+- **Detailed Inline Comments**: Added explanatory comments for every variable, action, and decision point in `background.js` to aid code review and future maintenance.
+- **Performance Optimizations**:
+
+  - **In-memory Caching** (`folderCache`) to avoid redundant folder lookups within a session.
+  - **Parallel Folder Queries** using `Promise.any` for early resolution and reduced wait time.
+  - **Non-blocking UI** by deferring heavy work in an async IIFE (for message display) and yielding control via `setTimeout(0)`.
+  - **Quick Disable/Enable**: Immediately reflects loading and valid-folder states without blocking the Thunderbird UI.
+
+_These enhancements dramatically reduce UI freezes and make the extension more responsive under typical usage._
