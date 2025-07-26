@@ -1,13 +1,13 @@
 {
   "manifest_version": 2,
-  "name": "Clippy autoSort",
-  "version": "0.2.0",
+  "name": "Thunderbird MROF",
+  "version": "0.3.0",
   "description": "Find and auto-sort your emails with initial replies and follow-ups.",
 
   "applications": {
     "gecko": {
       "id": "richard.sandeau.pro@gmail.com",
-      "strict_min_version": "128.0"
+      "strict_min_version": "140.0"
     }
   },
 
