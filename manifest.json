@@ -1,20 +1,17 @@
 {
   "manifest_version": 2,
   "name": "Thunderbird MROF",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Find and auto-sort your emails with initial replies and follow-ups.",
-
   "applications": {
     "gecko": {
       "id": "richard.sandeau.pro@gmail.com",
       "strict_min_version": "140.0"
     }
   },
-
   "icons": {
     "256": "icons/clippy-256.ico"
   },
-
   "permissions": [
     "tabs",
     "accountsRead",
@@ -23,11 +20,11 @@
     "notifications",
     "storage"
   ],
-
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
-
   "message_display_action": {
     "default_icon": {
       "256": "icons/clippy-256.ico"
