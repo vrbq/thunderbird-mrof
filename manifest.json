@@ -20,7 +20,8 @@
     "accountsRead",
     "messagesRead",
     "messagesMove",
-    "notifications"
+    "notifications",
+    "storage"
   ],
 
   "background": {
