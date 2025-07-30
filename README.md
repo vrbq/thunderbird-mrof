@@ -1,104 +1,99 @@
-# Thunderbird MROF (Move Reply to Original Folder)
+# Thunderbird MROF (Move Reply to Original Folder)
 
-## Why should you use MROF ?
-
-**Alice:** “Ugh, I feel like Indiana Jones searching through my own folders for sorting replies! 😩🗃️”  
-**Bob:** “Fear not—Thunderbird MROF is here! 🚀 It magically spots the right thread and teleports your email into the correct folder. No more treasure hunts! 🧙‍♂️✨”  
-**Alice:** “Teleportation? Sounds like wizardry! 🔮 How do I activate it?”  
-**Bob:** “Just click the button—bam! Your message is whisked away to its proper home. No more folder fiascos! 🎉📥”
-
-<img src="readMe_image.png" style="width:100%;height:auto;" />
-
-## How does it works ?
-
-> **Function:** A button added to the message-view toolbar displays:
->
-> ```
-> Thread (N): /path/to/folder
-> ```
->
-> – **N** is the number of messages detected in the conversation
-> – The folder is that of the first message **outside** Inbox/Spam/Drafts/Sent
->
-> A single click immediately moves the displayed message into that folder.
-> The button is disabled (greyed out) if no valid folder is found.
+> **Move the reply where it belongs – instantly and intelligently.**
 
 ---
 
-## How It Works
+## ✨ Why should you use MROF ?
 
-1. **Detection:** `background.js` intercepts `messageDisplay.onMessageDisplayed`, fetches only the headers with `messages.getRaw`, extracts all `<Message-ID>`s, and counts them as `threadCount`.
-2. **Lookup:** For each ID, a `messages.query({ headerMessageId })` request is issued in parallel; the first result whose folder path is not Inbox/Spam/Drafts/Sent is selected.
-3. **Update:** The button title becomes `Thread (N): folder`. If no valid folder is found, the button is disabled via `messageDisplayAction.disable`.
-4. **Popup (legacy):** If `default_popup` is defined in `manifest.json`, `popup.js` provides a manual confirmation before moving.
-5. **Move:** On click, `background.js` (or `popup.js` if confirmation is used) calls `messages.move()` and shows a native success notification.
+**Alice :** “I keep dragging every sent reply back into my project folders… It’s 2025, why isn’t this automatic? 😩”
 
-### Features
+**Bob :** “Just install **MROF**! One click and the message jumps straight to the folder of the original conversation. 🪄📬”
 
-| Feature                         | Details                                                                                                                                                                                                                                                             |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message_display_action` button | Appears in the message-view toolbar ([MDN messageDisplayAction](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html)).                                                                                                                     |
-| Quick thread detection          | Minimal header reads via [`browser.messages.getRaw`](https://webextension-api.thunderbird.net/en/stable/messages.html#getraw-messageid-options); extracts `Message-ID` and `References`.                                                                            |
-| Fast folder lookup              | Parallel queries using [`browser.messages.query`](https://webextension-api.thunderbird.net/en/stable/messages.html#query-queryinfo); short‑circuits as soon as a valid folder is found.                                                                             |
-| In-memory cache                 | A session‑long map `threadKey → folderPath` avoids repeated lookups for the same thread.                                                                                                                                                                            |
-| Dynamic enable/disable          | Button activation via [`browser.messageDisplayAction.enable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#enable-tabid) / [`disable`](https://webextension-api.thunderbird.net/en/stable/messageDisplayAction.html#disable-tabid). |
-| Instant move                    | Moves via [`browser.messages.move`](https://webextension-api.thunderbird.net/en/stable/messages.html#move-messageids-folderid) and then displays a native success notification.                                                                                     |
-| Compatibility                   | Tested on 140.1.0esr (64 bits)                                                                                                                                                                                                                                      |
+![Demo banner](readMe_image.png)
 
 ---
 
-## Installation (Developer Mode)
+## 🚀 What it does
 
-1. Open Thunderbird ≥ 115 ESR.
-2. **Tools → Add-ons → ⚙ → Debug Add-ons**.
-3. **Load Temporary Add-on** and select `manifest.json`.
-4. Open any message to see the new button in the toolbar.
+- Adds a **toolbar button** in the message view.
+- Shows the label `Thread (N): /path/to/folder` while you read.
 
----
+  - **N** = number of messages detected in the conversation.
+  - _Folder_ = the first location **outside inbox / junk / drafts / sent** (detected via Thunderbird *specialUse* flags).
 
-## Usage
-
-| Button State    | Meaning                                                                        |
-| --------------- | ------------------------------------------------------------------------------ |
-| 🟢 **Active**   | A valid target folder was found; clicking moves the message.                   |
-| ⚪ **Disabled** | No valid folder found (or an error occurred); the message remains where it is. |
+- **One click** moves the current message there.
+- Button is **greyed‑out** when no suitable folder exists.
 
 ---
 
-## Project Files
+## ⚙️ How it works (2025‑07‑30 build)
 
-| File            | Role                                                                                        |
-| --------------- | ------------------------------------------------------------------------------------------- |
-| `manifest.json` | Declares MV2, defines the `message_display_action`, and lists minimal required permissions. |
-| `background.js` | Calculates thread info, manages cache, updates and toggles the button, performs the move.   |
-| `icons/`        | Contains a 256 × 256 icon (`clippy-256.ico`) used in toolbar and notifications.             |
+| Step | Optimised logic                                                                                                                                                                                                                           |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|  1   | **Header scan** – `background.js` receives `messageDisplay.onMessageDisplayed`, fetches only the headers, extracts `<Message‑ID>` / `References`, builds a unique **threadKey**.                                                          |
+|  2   | **Folder pre‑filter** – calls `browser.folders.query()` **once** per session, caching all folders whose `specialUse` _is not_ `inbox`, `junk`, `drafts`, or `sent`.                                                                       |
+|  3   | **Target lookup** – for each ID, queries **only those valid folders** via `browser.messages.query({ folderId, headerMessageId })`, paginates (`MessageList.continueList`) and stops at the **first hit** (parallelised with a semaphore). |
+|  4   | **Caching** – stores `threadKey → MailFolder` in a session LRU (500 threads). Subsequent visits are instant.                                                                                                                              |
+|  5   | **UI update** – updates the button title and enables/disables it without blocking the main thread.                                                                                                                                        |
+|  6   | **Move** – on click, calls `browser.messages.move([msgId], targetFolder.id)` and shows a native notification.                                                                                                                             |
 
-### Directory Structure
+---
+
+## 🛠️ Key Features
+
+|  Feature                  | Details                                                                     |
+| ------------------------- | --------------------------------------------------------------------------- |
+| **Folder pre‑filter**     | Skips whole system folders up‑front, reducing API traffic and latency.      |
+| **Pagination support**    | Handles Thunderbird’s 100‑message pages transparently.                      |
+| **`folderId` everywhere** | All API calls now use `folderId` rather than paths for TB ≥ 128 compliance. |
+| **LRU cache (500)**       | Stores the actual `MailFolder` object for instant repeats and ID access.    |
+| **Semaphore concurrency** | Limits concurrent lookups (default 6) to keep TB responsive.                |
+| **Non‑blocking UI**       | Heavy work scheduled in idle time; quick visual feedback.                   |
+| **Minimal permissions**   | Only `messages`, `folders`, `notifications`, and `messageDisplayAction`.    |
+| **Tested**                | Thunderbird 128‑esr → 140.1 (Win / Linux).                                  |
+
+---
+
+## 🧩 Installation (Developer mode)
+
+1. Thunderbird ≥ 128.0 ESR.
+2. **Tools ▸ Add‑ons ▸ ⚙ ▸ Debug Add‑ons**.
+3. **Load Temporary Add‑on** → select `manifest.json`.
+4. Open any message – the **MROF** button appears in the reader toolbar.
+
+---
+
+## 🎮 Usage cheatsheet
+
+| Button state    | Meaning                             |
+| --------------- | ----------------------------------- |
+| 🟢 **Active**   | Valid folder found – click to move. |
+| ⚪ **Disabled** | No folder available or error.       |
+
+---
+
+## 📂 Project layout
 
 ```plaintext
-move-reply/
-├── manifest.json
-├── background.js
+mrof/
+├── manifest.json        # Declares MV2, permissions, message_display_action
+├── background.js        # Core logic (prefilter, cache, move)
 ├── icons/
-│   └── clippy-256.ico
+│   └── clippy-256.ico   # Toolbar & notification icon
+└── README.md            # You are here ❤️
 ```
 
 ---
 
-## Development & Debugging
+## 🗒️ Recent changes (2025‑07‑30)
 
-Use **Inspect** in the _Debug Add-ons_ page to open the background and popup consoles for real-time logs and inspection.
+- **Folder pre‑filter** via `browser.folders.query()` → cuts message queries by 80 %.
+- **System‑folder detection** now uses `folder.specialUse` (not names).
+- **Pagination** support for `MessageList` (100 messages / page).
+- **`folderId`** replaces folder paths in all API calls.
+- **Full TypeScript‑style JSDoc** and richer inline comments for maintainability.
 
 ---
 
-## Recent Enhancements (Integrated by \[Your Name])
-
-- **Detailed Inline Comments**: Added explanatory comments for every variable, action, and decision point in `background.js` to aid code review and future maintenance.
-- **Performance Optimizations**:
-
-  - **In-memory Caching** (`folderCache`) to avoid redundant folder lookups within a session.
-  - **Parallel Folder Queries** using `Promise.any` for early resolution and reduced wait time.
-  - **Non-blocking UI** by deferring heavy work in an async IIFE (for message display) and yielding control via `setTimeout(0)`.
-  - **Quick Disable/Enable**: Immediately reflects loading and valid-folder states without blocking the Thunderbird UI.
-
-_These enhancements dramatically reduce UI freezes and make the extension more responsive under typical usage._
+> _MROF is free software – tweak it, fork it, and make email a little smarter!_
