@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thunderbird MROF",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Find and auto-sort your emails with initial replies and follow-ups.",
   "applications": {
     "gecko": {

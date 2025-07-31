@@ -1,26 +1,24 @@
-// background.js – OPTIMISED 2025‑07‑30 (folder‑prefilter migration 2025‑07‑30)
+// background.js – OPTIMISED v2.2 (2025‑07‑31)
 // -----------------------------------------------------------------------------
-// This refactor focuses on three main axes (as requested):
-// 2️⃣ Reducing Thunderbird API traffic
-// 3️⃣ Scheduling / concurrency control to keep the UI fully non‑blocking
-// 4️⃣ Algorithms & data structures optimisation
-// -----------------------------------------------------------------------------
-//  ⚠️  All public behaviour remains unchanged (same UI, same notifications)
-//  ⚙️  2025‑07‑30: Updated to Thunderbird 128+ API (folderId instead of folder path)
-//  🆕  2025‑07‑30: Replaced path‑based system‑folder detection with specialUse[] check
-//  🆕  2025‑07‑30: Added MessageList pagination handling (max 100 msgs/page)
-//  🆕  2025‑07‑30: **Folder pre‑filter** – messages are now searched **only** in non‑system folders, using `browser.folders.query()`
+//  ✅  What’s new (user request 2025‑07‑31):
+//  1. Verbose logging everywhere the folder detection pipeline runs.
+//  2. When a thread has ≥ 3 unique Message‑IDs, chances are high a folder exists; if
+//     the lookup comes back “not found”, we still enable the button and label it
+//     “not found — search again”. A click triggers a fresh lookup bypassing the
+//     cache so the user can force a retry.
+//  3. Same retry path automatically triggered once just after display if the
+//     first lookup returned not found while threadCount ≥ 3 (optimistic retry).
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
 // 🔍 DEBUG switch & helpers
 // -----------------------------------------------------------------------------
-const DEBUG = true;
+const DEBUG = false;
 const debugLog = (...args) => DEBUG && console.log('[MROF]', ...args);
 const benchmark = async (label, asyncFn) => {
   const t0 = performance.now();
   const res = await asyncFn();
-  debugLog(`${label} took ${(performance.now() - t0).toFixed(2)} ms`);
+  debugLog(`${label} took ${(performance.now() - t0).toFixed(2)} ms`);
   return res;
 };
 
@@ -28,16 +26,14 @@ const benchmark = async (label, asyncFn) => {
 // 🔧  Utility helpers
 // -----------------------------------------------------------------------------
 const yieldToEventLoop = () => new Promise((r) => setTimeout(r, 0));
-
 const rqIdle = (cb) =>
   typeof requestIdleCallback === 'function'
     ? requestIdleCallback(cb, { timeout: 1000 })
     : setTimeout(cb, 16);
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // -----------------------------------------------------------------------------
-// 🗂️  In‑memory LRU cache   threadKey → MailFolder | 'not found'   (session)
+// 🗂️ In‑memory LRU cache   threadKey → MailFolder | 'not found'   (session)
 // -----------------------------------------------------------------------------
 const MAX_CACHE_SIZE = 500;
 /** @type {Map<string, import('webextension-api').MailFolder | 'not found'>} */
@@ -45,14 +41,12 @@ const folderCache = new Map();
 const setCache = (key, val) => {
   if (folderCache.has(key)) folderCache.delete(key);
   folderCache.set(key, val);
-  if (folderCache.size > MAX_CACHE_SIZE) {
-    const oldestKey = folderCache.keys().next().value;
-    folderCache.delete(oldestKey);
-  }
+  if (folderCache.size > MAX_CACHE_SIZE)
+    folderCache.delete(folderCache.keys().next().value);
 };
 
 // -----------------------------------------------------------------------------
-// 🏷️  Helpers & constants
+// 🏷️ Helpers & constants
 // -----------------------------------------------------------------------------
 const EXCLUDED_SPECIAL_USE = new Set([
   'inbox',
@@ -65,16 +59,12 @@ const isSystemFolder = (folder) =>
     EXCLUDED_SPECIAL_USE.has(id)
   );
 const MSG_ID_RE = /<[^>]+>/g;
-const makeThreadKey = (ids) => ids.join(',');
+const makeThreadKey = (ids) => ids.slice().sort().join(','); // stable key
 
 // -----------------------------------------------------------------------------
-// 📂  Folder pre‑filtering (skip system folders)
+// 📂 Folder pre‑filtering (skip system folders)
 // -----------------------------------------------------------------------------
 let cachedValidFolders = null; // Promise<MailFolder[]>
-/**
- * Return all non‑system folders once (cached).
- * @returns {Promise<import('webextension-api').MailFolder[]>}
- */
 const getValidFolders = async () => {
   if (cachedValidFolders) return cachedValidFolders;
   cachedValidFolders = browser.folders
@@ -84,7 +74,7 @@ const getValidFolders = async () => {
 };
 
 // -----------------------------------------------------------------------------
-// ⛓️  Concurrency control
+// ⛓️ Concurrency control
 // -----------------------------------------------------------------------------
 class Semaphore {
   constructor(max) {
@@ -105,8 +95,7 @@ class Semaphore {
     if (this.queue.length) this.queue.shift()();
   }
 }
-const MAX_PARALLEL_LOOKUPS = 6;
-const sem = new Semaphore(MAX_PARALLEL_LOOKUPS);
+const sem = new Semaphore(6);
 const withSemaphore = async (fn) => {
   await sem.acquire();
   try {
@@ -117,11 +106,8 @@ const withSemaphore = async (fn) => {
 };
 
 // -----------------------------------------------------------------------------
-// 📑  MessageList helpers (pagination)
+// 📑 MessageList helpers (pagination)
 // -----------------------------------------------------------------------------
-/**
- * Walk through a MessageList until `predicate` matches or end.
- */
 const findInMessageList = async (list, predicate) => {
   let current = list;
   let match = current.messages.find(predicate);
@@ -133,7 +119,7 @@ const findInMessageList = async (list, predicate) => {
 };
 
 // -----------------------------------------------------------------------------
-// 🔄  Deduplication of ongoing folder lookups per headerMessageId
+// 🔄 Deduplication of ongoing folder lookups per headerMessageId
 // -----------------------------------------------------------------------------
 /** @type {Map<string, Promise<{folder: import('webextension-api').MailFolder, message: import('webextension-api').MessageHeader}>>} */
 const ongoingIdLookups = new Map();
@@ -143,16 +129,20 @@ const lookupFolderForMsgId = (id) => {
   if (ongoingIdLookups.has(id)) return ongoingIdLookups.get(id);
 
   const p = (async () => {
+    debugLog(' → lookupFolderForMsgId start', id);
     const result = await Promise.race([
       withSemaphore(async () => {
-        const folders = await getValidFolders(); // 🆕 only non‑system folders
+        const folders = await getValidFolders();
         for (const folder of folders) {
           const list = await browser.messages.query({
             folderId: folder.id,
             headerMessageId: id,
           });
-          const hit = await findInMessageList(list, () => true); // headerMessageId already filters
-          if (hit) return { folder, message: hit };
+          const hit = await findInMessageList(list, () => true);
+          if (hit) {
+            debugLog('   ↳ found in', folder.path);
+            return { folder, message: hit };
+          }
         }
         throw new Error('no‑valid‑folder');
       }),
@@ -161,81 +151,115 @@ const lookupFolderForMsgId = (id) => {
       }),
     ]);
     return result;
-  })().finally(() => ongoingIdLookups.delete(id));
+  })().finally(() => {
+    debugLog(' ← lookupFolderForMsgId end', id);
+    ongoingIdLookups.delete(id);
+  });
 
   ongoingIdLookups.set(id, p);
   return p;
 };
 
 // -----------------------------------------------------------------------------
-// 🌟  findFirstValidFolder(ids) – returns {folder, message}
+// 🌟 findFirstValidFolder(ids) – returns {folder, message}
 // -----------------------------------------------------------------------------
 async function findFirstValidFolder(uniqueIds) {
-  debugLog('findFirstValidFolder() start', {
-    count: uniqueIds.length,
-  });
+  debugLog('findFirstValidFolder() start', { ids: uniqueIds });
   return benchmark('findFirstValidFolder total', async () => {
     try {
       return await Promise.any(uniqueIds.map(lookupFolderForMsgId));
     } catch (_) {
+      debugLog('findFirstValidFolder → nothing found');
       return { folder: null, message: null };
     }
   });
 }
 
 // -----------------------------------------------------------------------------
-// 🏃‍♂️  Core processing pipeline
+// 🏃‍♂️ Core UI helpers
+// -----------------------------------------------------------------------------
+const setActionTitle = (tabId, threadCount, label) =>
+  browser.messageDisplayAction.setTitle({
+    title: `Thread (${threadCount}): ${label}`,
+  });
+
+const maybeEnableRetryUI = (tabId, threadCount, found) => {
+  if (threadCount >= 3 && !found) {
+    // Enable button so user can force a retry
+    browser.messageDisplayAction.enable(tabId);
+    setActionTitle(tabId, threadCount, 'not found — search again');
+  }
+};
+
+// -----------------------------------------------------------------------------
+// 🏃‍♂️ Core processing pipeline
 // -----------------------------------------------------------------------------
 async function processDisplayedMessage(tab, msgHeader) {
-  const innerStart = performance.now();
+  const t0 = performance.now();
   try {
-    browser.messageDisplayAction.setTitle({ title: 'Loading…' });
-    browser.messageDisplayAction.disable(tab.id);
+    await browser.messageDisplayAction.disable(tab.id);
+    await setActionTitle(tab.id, 0, 'Loading…');
 
+    // Extract IDs (unique + sorted)
     const { headers } = await browser.messages.getFull(msgHeader.id);
     const raw = `${headers.references?.[0] || ''}${
       headers['In-Reply-To']?.[0] || ''
     }${headers['Message-ID']?.[0] || ''}`;
-    const ids = [
-      ...new Set(
-        raw.match(MSG_ID_RE)?.map((s) => s.slice(1, -1)) || []
-      ),
-    ];
+    const ids = Array.from(
+      new Set(raw.match(MSG_ID_RE)?.map((s) => s.slice(1, -1)) || [])
+    ).sort();
     const threadKey = makeThreadKey(ids);
     const threadCount = ids.length;
+
+    debugLog('processDisplayedMessage', { threadKey, threadCount });
 
     const cached = folderCache.get(threadKey);
     if (cached) {
       const label =
         cached === 'not found' ? 'not found' : cached.path;
-      browser.messageDisplayAction.setTitle({
-        title: `Thread (${threadCount}): ${label}`,
-      });
-      if (cached !== 'not found')
-        browser.messageDisplayAction.enable(tab.id);
-      debugLog('processDisplayedMessage: cache hit', {
-        threadKey,
-        elapsed: (performance.now() - innerStart).toFixed(2),
-      });
+      await setActionTitle(tab.id, threadCount, label);
+      if (cached !== 'not found') {
+        await browser.messageDisplayAction.enable(tab.id);
+      } else {
+        maybeEnableRetryUI(tab.id, threadCount, false);
+      }
+      debugLog('  ↳ cache hit, done');
       return;
     }
 
     await new Promise((res) => rqIdle(res));
-    debugLog('Starting folder lookup', { threadKey });
+    debugLog('  ↳ cache miss → lookup');
 
     const { folder } = await findFirstValidFolder(ids);
     setCache(threadKey, folder || 'not found');
 
-    const label = folder ? folder.path : 'not found';
-    browser.messageDisplayAction.setTitle({
-      title: `Thread (${threadCount}): ${label}`,
-    });
-    if (folder) browser.messageDisplayAction.enable(tab.id);
+    if (folder) {
+      await setActionTitle(tab.id, threadCount, folder.path);
+      await browser.messageDisplayAction.enable(tab.id);
+    } else {
+      debugLog('  ↳ first lookup not found');
+      await setActionTitle(tab.id, threadCount, 'not found');
+      maybeEnableRetryUI(tab.id, threadCount, false);
 
-    debugLog('processDisplayedMessage completed', {
-      threadKey,
-      folderPath: label,
-      elapsed: (performance.now() - innerStart).toFixed(2),
+      // 🔁 automatic optimistic retry (once)
+      if (threadCount >= 3) {
+        await yieldToEventLoop();
+        debugLog('  ↳ optimistic retry');
+        const retry = await findFirstValidFolder(ids);
+        if (retry.folder) {
+          setCache(threadKey, retry.folder);
+          await setActionTitle(
+            tab.id,
+            threadCount,
+            retry.folder.path
+          );
+          await browser.messageDisplayAction.enable(tab.id);
+        }
+      }
+    }
+
+    debugLog('processDisplayedMessage done', {
+      elapsed: (performance.now() - t0).toFixed(2),
     });
   } catch (err) {
     debugLog('Error in processDisplayedMessage', err);
@@ -243,7 +267,7 @@ async function processDisplayedMessage(tab, msgHeader) {
 }
 
 // -----------------------------------------------------------------------------
-// 1️⃣  Listener: message displayed
+// 1️⃣ Listener: message displayed
 // -----------------------------------------------------------------------------
 browser.messageDisplay.onMessageDisplayed.addListener(
   (tab, msgHeader) => {
@@ -252,11 +276,11 @@ browser.messageDisplay.onMessageDisplayed.addListener(
 );
 
 // -----------------------------------------------------------------------------
-// 2️⃣  Listener: toolbar button click
+// 2️⃣ Listener: toolbar button click
 // -----------------------------------------------------------------------------
 browser.messageDisplayAction.onClicked.addListener(async (tab) => {
   const startTime = performance.now();
-  debugLog('onClicked() invoked', { tabId: tab.id });
+  debugLog('onClicked()', { tabId: tab.id });
 
   try {
     const displayed =
@@ -265,62 +289,61 @@ browser.messageDisplayAction.onClicked.addListener(async (tab) => {
     const raw = `${headers.references?.[0] || ''}${
       headers['In-Reply-To']?.[0] || ''
     }${headers['Message-ID']?.[0] || ''}`;
-    const ids = [
-      ...new Set(
-        raw.match(MSG_ID_RE)?.map((s) => s.slice(1, -1)) || []
-      ),
-    ];
+    const ids = Array.from(
+      new Set(raw.match(MSG_ID_RE)?.map((s) => s.slice(1, -1)) || [])
+    ).sort();
     const threadKey = makeThreadKey(ids);
+    const threadCount = ids.length;
+
+    debugLog('onClicked thread', { threadKey, threadCount });
 
     let cached = folderCache.get(threadKey);
     let targetFolder = null;
     let destinationMsg = null;
 
-    if (!cached || cached === 'not found') {
-      await yieldToEventLoop();
-      debugLog('Cache miss → lookup', { threadKey });
+    // Force a fresh lookup if we had "not found" but threadCount ≥ 3
+    const mustForce = cached === 'not found' && threadCount >= 3;
+
+    if (!cached || mustForce) {
+      debugLog('  ↳ performing (re)lookup');
       const result = await findFirstValidFolder(ids);
       targetFolder = result.folder;
       destinationMsg = result.message;
       setCache(threadKey, targetFolder || 'not found');
-    } else {
+    } else if (cached !== 'not found') {
       targetFolder = cached;
-      debugLog('Cache hit for move', {
-        threadKey,
-        folderPath: targetFolder.path,
-      });
-      const list = await browser.messages.query({
-        folderId: targetFolder.id,
-        subject: displayed.subject,
-      }); // 🆕 paginated
-      destinationMsg = await findInMessageList(list, () => true); // 🆕 first msg in thread
+      debugLog('  ↳ cache hit (folder)', targetFolder.path);
+      // find a message in that folder by headerMessageId (robust)
+      for (const mid of ids) {
+        const list = await browser.messages.query({
+          folderId: targetFolder.id,
+          headerMessageId: mid,
+        });
+        destinationMsg = await findInMessageList(list, () => true);
+        if (destinationMsg) break;
+      }
     }
 
-    if (!destinationMsg)
-      throw new Error('No valid folder found for moving');
+    if (!destinationMsg) throw new Error('No valid folder found');
 
     await browser.messages.move([displayed.id], targetFolder.id);
-
     await browser.notifications.create({
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
       title: 'Message moved',
       message: `Moved to: ${targetFolder.path}`,
     });
-    debugLog('Move successful', { folderPath: targetFolder.path });
   } catch (err) {
-    debugLog('Error in onClicked()', err);
+    debugLog('onClicked() error', err);
     await browser.notifications.create({
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
-      title: 'Error moving message',
+      title: 'Error',
       message: err.message,
     });
   } finally {
-    debugLog(
-      `onClicked() completed in ${(
-        performance.now() - startTime
-      ).toFixed(2)} ms`
-    );
+    debugLog('onClicked() end', {
+      elapsed: (performance.now() - startTime).toFixed(2),
+    });
   }
 });
