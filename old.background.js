@@ -13,7 +13,7 @@
 // -----------------------------------------------------------------------------
 // 🔍 DEBUG switch & helpers
 // -----------------------------------------------------------------------------
-const DEBUG = true;
+const DEBUG = false;
 const debugLog = (...args) => DEBUG && console.log('[MROF]', ...args);
 const benchmark = async (label, asyncFn) => {
   const t0 = performance.now();
@@ -181,113 +181,6 @@ async function findFirstValidFolder(uniqueIds) {
 }
 
 // -----------------------------------------------------------------------------
-// 🧪 Subject-based suggestion (settings + runtime)
-// -----------------------------------------------------------------------------
-const MROF_SETTINGS_KEY = 'mrof_settings_v1';
-const DEFAULT_SETTINGS = {
-  subjectSuggestEnabled: true,
-  subjectRegexList: [], // array of regex strings (e.g. "\\[insal-tc-stages4TC")
-  subjectHintMap: {}, // pattern -> { id, path, ts }
-};
-
-// ephemeral per-session cache: threadKey -> { id, path }
-const subjectSuggestionCache = new Map();
-
-async function getSettings() {
-  const obj = await browser.storage.local.get(MROF_SETTINGS_KEY);
-  return { ...DEFAULT_SETTINGS, ...(obj[MROF_SETTINGS_KEY] || {}) };
-}
-async function saveSettings(next) {
-  const merged = { ...(await getSettings()), ...next };
-  await browser.storage.local.set({ [MROF_SETTINGS_KEY]: merged });
-  return merged;
-}
-
-function safeRegexTest(pattern, text) {
-  try {
-    return new RegExp(pattern, 'i').test(text || '');
-  } catch {
-    return false;
-  }
-}
-
-// Heuristic: if subject contains "[token...]", pick the token (including '[') until ']' or space; else take the first 40 chars.
-function deriveMotifFromSubject(subject) {
-  subject = subject || '';
-  const m = subject.match(/\[[^\]\s]+/);
-  if (m) return m[0]; // e.g. "[insal-tc-stages4TC"
-  return subject.trim().slice(0, 40);
-}
-
-// Learn mapping pattern -> folder (id+path) after a successful move
-async function learnSubjectMapping(subject, folder) {
-  const settings = await getSettings();
-  const hits = (settings.subjectRegexList || []).filter((p) =>
-    safeRegexTest(p, subject)
-  );
-  if (!hits.length || !folder) return;
-  for (const p of hits) {
-    settings.subjectHintMap[p] = {
-      id: folder.id,
-      path: folder.path,
-      ts: Date.now(),
-    };
-  }
-  await saveSettings({ subjectHintMap: settings.subjectHintMap });
-}
-
-// Suggest a folder if detection failed: updates UI and caches suggestion; returns true if a suggestion was shown
-async function maybeSuggestBySubject(
-  tabId,
-  threadCount,
-  threadKey,
-  msgHeader
-) {
-  try {
-    const settings = await getSettings();
-    if (!settings.subjectSuggestEnabled) return false;
-    // Already suggested? re-apply UI
-    if (subjectSuggestionCache.has(threadKey)) {
-      const f = subjectSuggestionCache.get(threadKey);
-      await browser.messageDisplayAction.enable(tabId);
-      await setActionTitle(
-        tabId,
-        threadCount,
-        `new, maybe ${f.path} ?`
-      );
-      return true;
-    }
-    // Read subject
-    let subject = msgHeader?.subject || '';
-    try {
-      const full = await browser.messages.getFull(msgHeader.id);
-      subject = full?.headers?.subject?.[0] || subject || '';
-    } catch (_) {}
-    const patterns = settings.subjectRegexList || [];
-    for (const p of patterns) {
-      if (!safeRegexTest(p, subject)) continue;
-      const hint = settings.subjectHintMap?.[p];
-      if (hint && hint.id && hint.path) {
-        subjectSuggestionCache.set(threadKey, {
-          id: hint.id,
-          path: hint.path,
-        });
-        await browser.messageDisplayAction.enable(tabId);
-        await setActionTitle(
-          tabId,
-          threadCount,
-          `new, maybe ${hint.path} ?`
-        );
-        return true;
-      }
-    }
-    return false;
-  } catch (e) {
-    // fail silently
-    return false;
-  }
-}
-// -----------------------------------------------------------------------------
 // 🏃‍♂️ Core UI helpers
 // -----------------------------------------------------------------------------
 const setActionTitle = (tabId, threadCount, label) =>
@@ -336,13 +229,6 @@ async function processDisplayedMessage(tab, msgHeader) {
         await browser.messageDisplayAction.enable(tab.id);
       } else {
         maybeEnableRetryUI(tab.id, threadCount, false);
-        // 🧠 Subject-based suggestion from cache miss (still not found)
-        await maybeSuggestBySubject(
-          tab.id,
-          threadCount,
-          threadKey,
-          msgHeader
-        );
       }
       debugLog('  ↳ cache hit, done');
       return;
@@ -360,14 +246,6 @@ async function processDisplayedMessage(tab, msgHeader) {
     } else {
       debugLog('  ↳ first lookup not found');
       await setActionTitle(tab.id, threadCount, 'not found');
-      // 🧠 Subject-based suggestion (only when not found)
-      await maybeSuggestBySubject(
-        tab.id,
-        threadCount,
-        threadKey,
-        msgHeader
-      );
-
       maybeEnableRetryUI(tab.id, threadCount, false);
 
       // 🔁 automatic optimistic retry (once)
@@ -424,13 +302,6 @@ browser.messageDisplayAction.onClicked.addListener(async (tab) => {
     // Try most-recent first: References are chronological; Message-ID is current
     ids.reverse();
     const threadKey = makeThreadKey(ids);
-
-    // 👉 If a subject-based suggestion exists for this thread, use it directly
-    if (subjectSuggestionCache.has(threadKey)) {
-      const suggested = subjectSuggestionCache.get(threadKey);
-      targetFolder = { id: suggested.id, path: suggested.path };
-      debugLog('onClicked(): using subject suggestion', suggested);
-    }
     const threadCount = ids.length;
 
     debugLog('onClicked thread', { threadKey, threadCount });
@@ -465,18 +336,6 @@ browser.messageDisplayAction.onClicked.addListener(async (tab) => {
     if (!destinationMsg) throw new Error('No valid folder found');
 
     await browser.messages.move([displayed.id], targetFolder.id);
-    // Learn mapping for subject-based suggestion
-    try {
-      const full = await browser.messages.getFull(displayed.id);
-      await learnSubjectMapping(
-        full?.headers?.subject?.[0] || displayed.subject || '',
-        targetFolder
-      );
-    } catch (_) {}
-    // Clear any suggestion for this thread
-    try {
-      subjectSuggestionCache.delete(threadKey);
-    } catch (_) {}
     await browser.notifications.create({
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
@@ -516,106 +375,7 @@ browser.messageDisplayAction.onClicked.addListener(async (tab) => {
     contexts: ['message_display_action'],
   });
 
-  // Settings parent menu
-  browser.menus.create({
-    id: 'mrof-settings',
-    title: 'Paramètres',
-    contexts: ['message_display_action'],
-  });
-  browser.menus.create({
-    id: 'mrof-param-toggle',
-    title: 'Activer la suggestion par sujet',
-    contexts: ['message_display_action'],
-    parentId: 'mrof-settings',
-  });
-  browser.menus.create({
-    id: 'mrof-param-add-from-subject',
-    title: 'Ajouter motif (depuis le sujet affiché)',
-    contexts: ['message_display_action'],
-    parentId: 'mrof-settings',
-  });
-  browser.menus.create({
-    id: 'mrof-param-clear',
-    title: 'Effacer tous les motifs',
-    contexts: ['message_display_action'],
-    parentId: 'mrof-settings',
-  });
-
-  browser.menus.onShown.addListener(async (info, tab) => {
-    try {
-      const s = await getSettings();
-      await browser.menus.update('mrof-param-toggle', {
-        title: s.subjectSuggestEnabled
-          ? 'Désactiver la suggestion par sujet'
-          : 'Activer la suggestion par sujet',
-      });
-      await browser.menus.refresh();
-    } catch (_) {}
-  });
-
   browser.menus.onClicked.addListener(async (info, tab) => {
-    if (info.menuItemId === 'mrof-param-toggle') {
-      const s = await getSettings();
-      await saveSettings({
-        subjectSuggestEnabled: !s.subjectSuggestEnabled,
-      });
-      try {
-        await browser.notifications.create({
-          type: 'basic',
-          iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
-          title: 'MROF',
-          message: s.subjectSuggestEnabled
-            ? 'Suggestion par sujet désactivée'
-            : 'Suggestion par sujet activée',
-        });
-      } catch (_) {}
-      return;
-    }
-    if (info.menuItemId === 'mrof-param-add-from-subject') {
-      try {
-        const displayed =
-          await browser.messageDisplay.getDisplayedMessage(tab.id);
-        const full = await browser.messages.getFull(displayed.id);
-        const subj =
-          full?.headers?.subject?.[0] || displayed.subject || '';
-        const motif = deriveMotifFromSubject(subj);
-        const s = await getSettings();
-        const list = new Set(s.subjectRegexList || []);
-        // Treat motif as literal by escaping regexp specials
-        const escaped = motif.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        list.add(escaped);
-        await saveSettings({ subjectRegexList: Array.from(list) });
-        await browser.notifications.create({
-          type: 'basic',
-          iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
-          title: 'MROF',
-          message: `Motif ajouté: ${motif}`,
-        });
-      } catch (e) {
-        await browser.notifications.create({
-          type: 'basic',
-          iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
-          title: 'MROF',
-          message: `Impossible d'ajouter un motif: ${e.message}`,
-        });
-      }
-      return;
-    }
-    if (info.menuItemId === 'mrof-param-clear') {
-      await saveSettings({
-        subjectRegexList: [],
-        subjectHintMap: {},
-      });
-      try {
-        await browser.notifications.create({
-          type: 'basic',
-          iconUrl: browser.runtime.getURL('icons/clippy-256.ico'),
-          title: 'MROF',
-          message: 'Motifs effacés.',
-        });
-      } catch (_) {}
-      return;
-    }
     if (info.menuItemId !== 'mrof-force-refresh') return;
     try {
       const displayed =
