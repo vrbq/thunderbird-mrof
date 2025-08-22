@@ -111,14 +111,14 @@ mrof/
 
 ## Changelog
 
-### 2025-08-22 • v2.1
+### 2025-08-22 • v6
 
 - **New:** Right-click menu on the MROF toolbar button — **Re-run detection (ignore cache)** for the **current thread**.
 - **Improved:** Thread scan order is now **newest → oldest**, with **early stop** on the first valid folder.
 - **Dev:** Safer cache invalidation for per-thread entries; clears in-flight lookups before recompute.
 - **UX:** Notification after manual refresh to confirm a fresh search ran.
 
-### 2025‑07‑31  • v2.2
+### 2025‑07‑31  • v5
 
 - **Verbose logging** across every async step.
 - **Automatic & manual retry** for threads with ≥3 messages.
@@ -126,7 +126,7 @@ mrof/
 - **Stable cache key** fixes rare false negatives.
 - **Header‑based move** eliminates subject mismatches.
 
-### 2025-07-30 • v2.0
+### 2025-07-30 • v4
 
 - Folder pre-filter (non-system only)
 - Pagination support (100 msgs/page)
